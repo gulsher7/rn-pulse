@@ -84,9 +84,23 @@ struct MaestroService {
     }
 
     private func value(after prefix: String, in line: String) -> String {
-        line
+        let rawValue = line
             .dropFirst(prefix.count)
             .trimmingCharacters(in: .whitespaces)
-            .trimmingCharacters(in: CharacterSet(charactersIn: ""'"))
+
+        var value = String(rawValue)
+
+        if value.count >= 2 {
+            let first = value.first
+            let last = value.last
+
+            if (first == Character("\"") && last == Character("\""))
+                || (first == Character("'") && last == Character("'")) {
+                value.removeFirst()
+                value.removeLast()
+            }
+        }
+
+        return value
     }
 }
