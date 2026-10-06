@@ -60,7 +60,7 @@ final class AppViewModel: ObservableObject {
             return false
         }
 
-        return device.state == .booted || device.state == .shutdown
+        return (device.state == .booted || device.state == .shutdown)
             && !app.bundleID.isEmpty
     }
 
@@ -219,16 +219,16 @@ final class AppViewModel: ObservableObject {
 
             do {
                 self.isLaunchingIOSApp = true
-                self.statusMessage = "Booting (device.name)…"
+                self.statusMessage = "Booting \(device.name)…"
 
                 try await self.iosService.bootAndOpen(deviceID: device.id)
                 await self.refreshDevices()
 
-                self.statusMessage = "(device.name) is ready."
+                self.statusMessage = "\(device.name) is ready."
                 self.isLaunchingIOSApp = false
             } catch {
                 self.isLaunchingIOSApp = false
-                self.statusMessage = "Unable to run (device.name): (error.localizedDescription)"
+                self.statusMessage = "Unable to run \(device.name): \(error.localizedDescription)"
             }
         }
     }
@@ -247,14 +247,14 @@ final class AppViewModel: ObservableObject {
         lastExitCode = nil
         latestSnapshot = nil
         performanceSnapshots = []
-        statusMessage = "Preparing (installedApp.displayName)…"
+        statusMessage = "Preparing \(installedApp.displayName)…"
 
         Task { [weak self] in
             guard let self else { return }
 
             do {
                 if device.state != .booted {
-                    statusMessage = "Booting (device.name)…"
+                    statusMessage = "Booting \(device.name)…"
                     try await iosService.bootAndOpen(deviceID: device.id)
                     await refreshDevices()
                 } else {
@@ -271,7 +271,7 @@ final class AppViewModel: ObservableObject {
                     )
                 }
 
-                statusMessage = "Launching (installedApp.displayName)…"
+                statusMessage = "Launching \(installedApp.displayName)…"
 
                 let launch = try await iosService.launchApp(
                     deviceID: refreshedDevice.id,
@@ -287,15 +287,15 @@ final class AppViewModel: ObservableObject {
                 )
 
                 statusMessage = launch.startupMS.map {
-                    "Started (installedApp.displayName) in (String(format: "%.0f", $0)) ms. Monitoring…"
-                } ?? "Started (installedApp.displayName). Monitoring…"
+                    "Started \(installedApp.displayName) in \(String(format: "%.0f", $0)) ms. Monitoring…"
+                } ?? "Started \(installedApp.displayName). Monitoring…"
 
                 isLaunchingIOSApp = false
                 startMonitoring(startupMS: launch.startupMS)
             } catch {
                 isLaunchingIOSApp = false
                 isRunning = false
-                statusMessage = "Unable to launch (installedApp.bundleID): (error.localizedDescription)"
+                statusMessage = "Unable to launch \(installedApp.bundleID): \(error.localizedDescription)"
             }
         }
     }
