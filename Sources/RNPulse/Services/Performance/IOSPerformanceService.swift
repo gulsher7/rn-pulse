@@ -120,7 +120,7 @@ final class IOSPerformanceService {
             "--instrument", "Time Profiler",
             "--device", deviceID,
             "--attach", app.processName,
-            "--time-limit", "\\(max(durationSeconds, 3))s",
+            "--time-limit", "\(max(durationSeconds, 3))s",
             "--no-prompt",
             "--output", traceURL.path
         ]
@@ -175,7 +175,7 @@ final class IOSPerformanceService {
                         )
                     )
                 } catch {
-                    onError("Unable to read iOS performance trace: \\(error.localizedDescription)")
+                    onError("Unable to read iOS performance trace: \(error.localizedDescription)")
                 }
             }
         }
@@ -184,7 +184,7 @@ final class IOSPerformanceService {
             try process.run()
         } catch {
             errorPipe.fileHandleForReading.readabilityHandler = nil
-            onError("Unable to start iOS performance recording: \\(error.localizedDescription)")
+            onError("Unable to start iOS performance recording: \(error.localizedDescription)")
             return false
         }
 
@@ -364,7 +364,7 @@ final class IOSPerformanceService {
             do {
                 try ffmpegInput.fileHandleForWriting.write(contentsOf: data)
             } catch {
-                onError("Simulator mirror stream ended: (error.localizedDescription)")
+                onError("Simulator mirror stream ended: \(error.localizedDescription)")
             }
         }
 
@@ -395,7 +395,7 @@ final class IOSPerformanceService {
             if recordProcess.isRunning { recordProcess.terminate() }
             if ffmpegProcess.isRunning { ffmpegProcess.terminate() }
 
-            onError("Unable to start fast simulator mirror: (error.localizedDescription)")
+            onError("Unable to start fast simulator mirror: \(error.localizedDescription)")
             return false
         }
 
@@ -555,19 +555,17 @@ private enum ThreadPerformanceParser {
     static func parse(_ xml: String) -> ThreadPerformanceResult {
         let rows = matches(of: "<row>(.*?)</row>", in: xml)
 
-        let threadNames = definitions(
+        let threadDefinitions = definitions(
             of: "thread",
             in: xml,
             prefersFormat: true
         )
-
-        let weights = definitions(
+        let weightDefinitions = definitions(
             of: "weight",
             in: xml,
             prefersFormat: false
         )
-
-        let states = definitions(
+        let stateDefinitions = definitions(
             of: "thread-state",
             in: xml,
             prefersFormat: true
@@ -583,7 +581,7 @@ private enum ThreadPerformanceParser {
             guard let weightText = referencedValue(
                 tag: "weight",
                 in: row,
-                definitions: weights
+                definitions: weightDefinitions
             ),
             let weight = Double(
                 weightText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -595,7 +593,7 @@ private enum ThreadPerformanceParser {
             if let state = referencedValue(
                 tag: "thread-state",
                 in: row,
-                definitions: states
+                definitions: stateDefinitions
             ),
             !state.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             !state.localizedCaseInsensitiveContains("running") {
@@ -605,7 +603,7 @@ private enum ThreadPerformanceParser {
             guard let threadName = referencedValue(
                 tag: "thread",
                 in: row,
-                definitions: threadNames
+                definitions: threadDefinitions
             ) else {
                 continue
             }
@@ -665,14 +663,14 @@ private enum ThreadPerformanceParser {
         let escapedTag = NSRegularExpression.escapedPattern(for: tag)
 
         if let inlineFormat = firstMatch(
-            of: "<\\(escapedTag)\\b[^>]*\\bfmt=\"([^\"]*)\"[^>]*>",
+            of: "<\(escapedTag)\\b[^>]*\\bfmt=\"([^\"]*)\"[^>]*>",
             in: row
         )?.first {
             return inlineFormat
         }
 
         if let inlineText = firstMatch(
-            of: "<\\(escapedTag)\\b[^>]*>(.*?)</\\(escapedTag)>",
+            of: "<\(escapedTag)\\b[^>]*>(.*?)</\(escapedTag)>",
             in: row
         )?.first,
         !inlineText.isEmpty {
@@ -680,7 +678,7 @@ private enum ThreadPerformanceParser {
         }
 
         if let reference = firstMatch(
-            of: "<\\(escapedTag)\\b[^>]*\\bref=\"([^\"]+)\"[^>]*/?>",
+            of: "<\(escapedTag)\\b[^>]*\\bref=\"([^\"]+)\"[^>]*/?>",
             in: row
         )?.first {
             return definitions[reference]
@@ -698,14 +696,14 @@ private enum ThreadPerformanceParser {
         var values: [String: String] = [:]
 
         let formatPattern =
-            "<\\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*\\bfmt=\"([^\"]*)\"[^>]*>"
+            "<\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*\\bfmt=\"([^\"]*)\"[^>]*>"
         for match in matches(of: formatPattern, in: xml) {
             guard match.count >= 2 else { continue }
             values[match[0]] = match[1]
         }
 
         let textPattern =
-            "<\\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*>(.*?)</\\(escapedTag)>"
+            "<\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*>(.*?)</\(escapedTag)>"
         for match in matches(of: textPattern, in: xml) {
             guard match.count >= 2 else { continue }
             if !prefersFormat || values[match[0]] == nil {
