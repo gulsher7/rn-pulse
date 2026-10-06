@@ -168,7 +168,7 @@ final class AppViewModel: ObservableObject {
         } catch {
             iosInstalledApps = []
             selectedIOSInstalledAppID = nil
-            statusMessage = "Unable to inspect installed apps: (error.localizedDescription)"
+            statusMessage = "Unable to inspect installed apps: \(error.localizedDescription)"
         }
     }
 
