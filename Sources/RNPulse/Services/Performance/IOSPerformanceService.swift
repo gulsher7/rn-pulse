@@ -475,32 +475,34 @@ final class IOSPerformanceService {
 
 private enum CoreAnimationFPSParser {
     static func parse(_ xml: String) -> Double? {
-        let idPattern = #"<(?:[A-Za-z0-9_-]+)[^>]*\bid=\"([^\"]+)\"[^>]*\bfmt=\"([^\"]*)\"[^>]*>"#
-        let rowPattern = #"<row>(.*?)</row>"#
+        let idPattern = "<(?:[A-Za-z0-9_-]+)[^>]*\\bid=\"([^\"]+)\"[^>]*\\bfmt=\"([^\"]*)\"[^>]*>"
+        let rowPattern = "<row>(.*?)</row>"
 
         var valuesByID: [String: String] = [:]
 
         for match in matches(of: idPattern, in: xml) {
-            valuesByID[match.1] = match.2
+            guard match.count >= 2 else { continue }
+            valuesByID[match[0]] = match[1]
         }
 
         var weightedFPS = 0.0
         var totalDuration = 0.0
         var unweightedValues: [Double] = []
 
-        for row in matches(of: rowPattern, in: xml) {
-            guard let fpsText = value(
-                forTag: "fps",
-                in: row.1,
-                valuesByID: valuesByID
-            ),
-            let fps = parseFPS(fpsText) else {
+        for rowMatch in matches(of: rowPattern, in: xml) {
+            guard let row = rowMatch.first,
+                  let fpsText = value(
+                    forTag: "fps",
+                    in: row,
+                    valuesByID: valuesByID
+                ),
+                let fps = parseFPS(fpsText) else {
                 continue
             }
 
             if let durationText = value(
                 forTag: "duration",
-                in: row.1,
+                in: row,
                 valuesByID: valuesByID
             ),
             let duration = parseSeconds(durationText),
@@ -525,13 +527,12 @@ private enum CoreAnimationFPSParser {
         in row: String,
         valuesByID: [String: String]
     ) -> String? {
-        let pattern = #"<#(tag)\b([^>]*)>"#
+        let escapedTag = NSRegularExpression.escapedPattern(for: tag)
+        let pattern = "<(escapedTag)\\b([^>]*)>"
 
-        guard let match = firstMatch(of: pattern, in: row) else {
+        guard let attributes = firstMatch(of: pattern, in: row)?.first else {
             return nil
         }
-
-        let attributes = match.1
 
         if let fmt = attribute(named: "fmt", in: attributes) {
             return fmt
@@ -546,10 +547,10 @@ private enum CoreAnimationFPSParser {
 
     private static func parseFPS(_ value: String) -> Double? {
         let cleaned = value.replacingOccurrences(of: ",", with: "")
-        let pattern = #"([0-9]+(?:\.[0-9]+)?)\s*FPS"#
+        let pattern = "([0-9]+(?:\\.[0-9]+)?)\\s*FPS"
 
-        if let match = firstMatch(of: pattern, in: cleaned),
-           let fps = Double(match.1) {
+        if let match = firstMatch(of: pattern, in: cleaned)?.first,
+           let fps = Double(match) {
             return fps
         }
 
@@ -559,44 +560,51 @@ private enum CoreAnimationFPSParser {
     private static func parseSeconds(_ value: String) -> Double? {
         let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if let match = firstMatch(
-            of: #"([0-9]+(?:\.[0-9]+)?)\s*(ms|s)"#,
+        guard let match = firstMatch(
+            of: "([0-9]+(?:\\.[0-9]+)?)\\s*(ms|s)",
             in: cleaned
         ),
-        let number = Double(match.1) {
-            return match.2 == "ms" ? number / 1000.0 : number
+        match.count >= 2,
+        let number = Double(match[0]) else {
+            return nil
         }
 
-        return nil
+        return match[1] == "ms" ? number / 1000.0 : number
     }
 
     private static func attribute(named name: String, in attributes: String) -> String? {
-        let pattern = #"\b#(name)=\"([^\"]*)\""#
-        return firstMatch(of: pattern, in: attributes)?.1
+        let escapedName = NSRegularExpression.escapedPattern(for: name)
+        let pattern = "\\b(escapedName)=\"([^\"]*)\""
+        return firstMatch(of: pattern, in: attributes)?.first
     }
 
     private static func firstMatch(
         of pattern: String,
         in string: String
-    ) -> (String, String)? {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
-              let match = regex.firstMatch(
-                in: string,
-                range: NSRange(string.startIndex..., in: string)
-              ),
-              match.numberOfRanges >= 2,
-              let first = Range(match.range(at: 1), in: string),
-              let second = Range(match.range(at: 2), in: string) else {
+    ) -> [String]? {
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.dotMatchesLineSeparators]
+        ),
+        let match = regex.firstMatch(
+            in: string,
+            range: NSRange(string.startIndex..., in: string)
+        ) else {
             return nil
         }
 
-        return (String(string[first]), String(string[second]))
+        return (1..<match.numberOfRanges).compactMap { index in
+            guard let range = Range(match.range(at: index), in: string) else {
+                return nil
+            }
+            return String(string[range])
+        }
     }
 
     private static func matches(
         of pattern: String,
         in string: String
-    ) -> [(String, String)] {
+    ) -> [[String]] {
         guard let regex = try? NSRegularExpression(
             pattern: pattern,
             options: [.dotMatchesLineSeparators]
@@ -606,14 +614,13 @@ private enum CoreAnimationFPSParser {
 
         let range = NSRange(string.startIndex..., in: string)
 
-        return regex.matches(in: string, range: range).compactMap { match in
-            guard match.numberOfRanges >= 3,
-                  let first = Range(match.range(at: 1), in: string),
-                  let second = Range(match.range(at: 2), in: string) else {
-                return nil
+        return regex.matches(in: string, range: range).map { match in
+            (1..<match.numberOfRanges).compactMap { index in
+                guard let range = Range(match.range(at: index), in: string) else {
+                    return nil
+                }
+                return String(string[range])
             }
-
-            return (String(string[first]), String(string[second]))
         }
     }
 }
