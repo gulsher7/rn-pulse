@@ -216,7 +216,7 @@ private struct IOSInstalledAppsSection: View {
                 }
             }
 
-            if let app = viewModel.selectedIOSInstalledApp {
+            if viewModel.selectedIOSInstalledApp != nil {
                 Button {
                     viewModel.runSelectedIOSApp()
                 } label: {
