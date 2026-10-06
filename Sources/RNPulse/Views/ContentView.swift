@@ -124,6 +124,25 @@ private struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .top) {
+            if viewModel.selectedDevice?.platform == .iOS {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+
+                    TextField(
+                        "Search installed apps",
+                        text: $viewModel.iosAppSearchText
+                    )
+                    .textFieldStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             EnvironmentSummary()
                 .padding(10)
@@ -133,10 +152,8 @@ private struct SidebarView: View {
 
 private struct IOSInstalledAppsSection: View {
     @EnvironmentObject private var viewModel: AppViewModel
-    @State private var searchText = ""
-
     private var filteredApps: [IOSInstalledApp] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = viewModel.iosAppSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             return Array(viewModel.iosInstalledApps.prefix(40))
         }
@@ -152,9 +169,6 @@ private struct IOSInstalledAppsSection: View {
 
     var body: some View {
         Section {
-            TextField("Search installed apps", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-
             if viewModel.iosInstalledApps.isEmpty {
                 Text("No installed apps detected.")
                     .foregroundStyle(.secondary)
