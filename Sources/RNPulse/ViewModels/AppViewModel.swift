@@ -12,7 +12,10 @@ final class AppViewModel: ObservableObject {
 
     @Published var iosRunningApps: [IOSRunningApp] = []
     @Published var selectedIOSAppID: IOSRunningApp.ID?
+    @Published var iosInstalledApps: [IOSInstalledApp] = []
+    @Published var selectedIOSInstalledAppID: IOSInstalledApp.ID?
     @Published var livePreviewData: Data?
+    @Published var isLaunchingIOSApp = false
 
     @Published var environment: EnvironmentSnapshot?
     @Published var isRefreshing = false
@@ -32,6 +35,7 @@ final class AppViewModel: ObservableObject {
 
     private var monitoringTask: Task<Void, Never>?
     private var previewFallbackTask: Task<Void, Never>?
+    private var currentStartupMS: Double?
 
     var selectedDevice: Device? {
         devices.first { $0.id == selectedDeviceID }
@@ -43,6 +47,21 @@ final class AppViewModel: ObservableObject {
 
     var selectedIOSApp: IOSRunningApp? {
         iosRunningApps.first { $0.id == selectedIOSAppID }
+    }
+
+    var selectedIOSInstalledApp: IOSInstalledApp? {
+        iosInstalledApps.first { $0.id == selectedIOSInstalledAppID }
+    }
+
+    var canLaunchSelectedIOSApp: Bool {
+        guard let device = selectedDevice,
+              device.platform == .iOS,
+              let app = selectedIOSInstalledApp else {
+            return false
+        }
+
+        return device.state == .booted || device.state == .shutdown
+            && !app.bundleID.isEmpty
     }
 
     var canStartMonitoring: Bool {
@@ -89,9 +108,15 @@ final class AppViewModel: ObservableObject {
         }
 
         if let device = selectedDevice {
-            if device.platform == .iOS && device.state == .booted {
-                startLivePreview()
-                await refreshIOSRunningApps()
+            if device.platform == .iOS {
+                if device.state == .booted {
+                    startLivePreview()
+                    await refreshIOSRunningApps()
+                } else {
+                    stopLivePreview()
+                }
+
+                await refreshIOSInstalledApps()
             } else {
                 stopLivePreview()
             }
@@ -110,7 +135,9 @@ final class AppViewModel: ObservableObject {
 
         selectedDeviceID = device.id
         selectedIOSAppID = nil
+        selectedIOSInstalledAppID = nil
         iosRunningApps = []
+        iosInstalledApps = []
         livePreviewData = nil
         latestSnapshot = nil
         performanceSnapshots = []
@@ -120,6 +147,28 @@ final class AppViewModel: ObservableObject {
             Task { await refreshIOSRunningApps() }
         } else if device.platform == .iOS {
             statusMessage = "Boot \(device.name) to mirror and monitor it."
+        }
+    }
+
+    func refreshIOSInstalledApps() async {
+        guard let device = selectedDevice, device.platform == .iOS else {
+            iosInstalledApps = []
+            selectedIOSInstalledAppID = nil
+            return
+        }
+
+        do {
+            let apps = try await iosService.listInstalledApps(deviceID: device.id)
+            iosInstalledApps = apps
+
+            if selectedIOSInstalledAppID == nil ||
+                !apps.contains(where: { $0.id == selectedIOSInstalledAppID }) {
+                selectedIOSInstalledAppID = apps.first?.id
+            }
+        } catch {
+            iosInstalledApps = []
+            selectedIOSInstalledAppID = nil
+            statusMessage = "Unable to inspect installed apps: (error.localizedDescription)"
         }
     }
 
@@ -154,6 +203,100 @@ final class AppViewModel: ObservableObject {
             iosRunningApps = []
             selectedIOSAppID = nil
             statusMessage = "Unable to inspect running apps: \(error.localizedDescription)"
+        }
+    }
+
+    func selectIOSInstalledApp(_ app: IOSInstalledApp) {
+        selectedIOSInstalledAppID = app.id
+        statusMessage = "Ready to launch (app.bundleID)."
+    }
+
+    func runSimulator(_ device: Device) {
+        guard device.platform == .iOS else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                self.isLaunchingIOSApp = true
+                self.statusMessage = "Booting (device.name)…"
+
+                try await self.iosService.bootAndOpen(deviceID: device.id)
+                await self.refreshDevices()
+
+                self.statusMessage = "(device.name) is ready."
+                self.isLaunchingIOSApp = false
+            } catch {
+                self.isLaunchingIOSApp = false
+                self.statusMessage = "Unable to run (device.name): (error.localizedDescription)"
+            }
+        }
+    }
+
+    func runSelectedIOSApp() {
+        guard let device = selectedDevice,
+              device.platform == .iOS,
+              let installedApp = selectedIOSInstalledApp else {
+            return
+        }
+
+        stopMonitoring()
+        isLaunchingIOSApp = true
+        isRunning = false
+        processOutput = ""
+        lastExitCode = nil
+        latestSnapshot = nil
+        performanceSnapshots = []
+        statusMessage = "Preparing (installedApp.displayName)…"
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                if device.state != .booted {
+                    statusMessage = "Booting (device.name)…"
+                    try await iosService.bootAndOpen(deviceID: device.id)
+                    await refreshDevices()
+                } else {
+                    try await iosService.openSimulator()
+                }
+
+                guard let refreshedDevice = self.selectedDevice else {
+                    throw NSError(
+                        domain: "RNPulse.iOS",
+                        code: 20,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "Simulator is no longer available."
+                        ]
+                    )
+                }
+
+                statusMessage = "Launching (installedApp.displayName)…"
+
+                let launch = try await iosService.launchApp(
+                    deviceID: refreshedDevice.id,
+                    bundleID: installedApp.bundleID
+                )
+
+                selectedIOSInstalledAppID = installedApp.id
+                await refreshIOSRunningApps()
+
+                selectedIOSAppID = launch.app.id
+                latestSnapshot = PerformanceSnapshot(
+                    startupMS: launch.startupMS
+                )
+
+                statusMessage = launch.startupMS.map {
+                    "Started (installedApp.displayName) in (String(format: "%.0f", $0)) ms. Monitoring…"
+                } ?? "Started (installedApp.displayName). Monitoring…"
+
+                isLaunchingIOSApp = false
+                startMonitoring(startupMS: launch.startupMS)
+            } catch {
+                isLaunchingIOSApp = false
+                isRunning = false
+                statusMessage = "Unable to launch (installedApp.bundleID): (error.localizedDescription)"
+            }
         }
     }
 
@@ -221,7 +364,7 @@ final class AppViewModel: ObservableObject {
         iosPerformanceService.stopMirror()
     }
 
-    func startMonitoring() {
+    func startMonitoring(startupMS: Double? = nil) {
         guard let device = selectedDevice else {
             statusMessage = "Select a device first."
             return
@@ -253,9 +396,18 @@ final class AppViewModel: ObservableObject {
 
             while !Task.isCancelled {
                 do {
-                    let snapshot = try await self.performanceEngine.capture(
+                    let captured = try await self.performanceEngine.capture(
                         device: device,
                         app: app
+                    )
+                    let snapshot = PerformanceSnapshot(
+                        timestamp: captured.timestamp,
+                        cpuPercent: captured.cpuPercent,
+                        memoryMB: captured.memoryMB,
+                        fps: captured.fps,
+                        startupMS: self.currentStartupMS ?? captured.startupMS,
+                        jsThreadPercent: captured.jsThreadPercent,
+                        uiThreadPercent: captured.uiThreadPercent
                     )
                     self.latestSnapshot = snapshot
                     self.performanceSnapshots.append(snapshot)
@@ -280,6 +432,8 @@ final class AppViewModel: ObservableObject {
             isRunning = false
             statusMessage = "Monitoring stopped."
         }
+
+        currentStartupMS = nil
     }
 
     private func startIOSFPSRecording(device: Device, app: IOSRunningApp) {
