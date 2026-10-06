@@ -190,7 +190,7 @@ struct IOSSimulatorService {
                 userInfo: [
                     NSLocalizedDescriptionKey:
                         result.stderr.isEmpty
-                        ? "Unable to launch \\(bundleID)."
+                        ? "Unable to launch \(bundleID)."
                         : result.stderr
                 ]
             )
