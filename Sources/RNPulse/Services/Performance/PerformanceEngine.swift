@@ -16,6 +16,7 @@ enum PerformanceEngineError: LocalizedError {
 
 actor PerformanceEngine {
     private let android = AndroidPerformanceService()
+    private let iOS = IOSPerformanceService()
 
     func capture(device: Device, flow: MaestroFlow) async throws -> PerformanceSnapshot {
         switch device.platform {
@@ -28,5 +29,16 @@ actor PerformanceEngine {
         case .iOS:
             throw PerformanceEngineError.unsupportedPlatform
         }
+    }
+
+    func capture(device: Device, app: IOSRunningApp) async throws -> PerformanceSnapshot {
+        guard device.platform == .iOS else {
+            throw PerformanceEngineError.unsupportedPlatform
+        }
+
+        return try await iOS.capture(
+            deviceID: device.id,
+            app: app
+        )
     }
 }
