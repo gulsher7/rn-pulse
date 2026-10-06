@@ -3,6 +3,7 @@ import Foundation
 final class IOSPerformanceService {
     private let runner = ProcessRunner()
     private var mirrorProcess: Process?
+    private var mirrorDecoderProcess: Process?
     private var mirrorInputPipe: Pipe?
     private var mirrorOutputPipe: Pipe?
     private var mirrorErrorPipe: Pipe?
@@ -33,8 +34,6 @@ final class IOSPerformanceService {
         deviceID: String,
         app: IOSRunningApp
     ) async throws -> PerformanceSnapshot {
-        // Simulator app processes are host macOS processes. Query the host
-        // process directly instead of asking the simulator runtime to execute ps.
         let result = try await runner.run(
             "/bin/ps",
             arguments: [
@@ -131,7 +130,12 @@ final class IOSPerformanceService {
         recordOutput.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            try? ffmpegInput.fileHandleForWriting.write(contentsOf: data)
+
+            do {
+                try ffmpegInput.fileHandleForWriting.write(contentsOf: data)
+            } catch {
+                onError("Simulator mirror stream ended: \(error.localizedDescription)")
+            }
         }
 
         ffmpegOutput.fileHandleForReading.readabilityHandler = { handle in
@@ -157,13 +161,16 @@ final class IOSPerformanceService {
             recordOutput.fileHandleForReading.readabilityHandler = nil
             ffmpegOutput.fileHandleForReading.readabilityHandler = nil
             ffmpegError.fileHandleForReading.readabilityHandler = nil
+
             if recordProcess.isRunning { recordProcess.terminate() }
             if ffmpegProcess.isRunning { ffmpegProcess.terminate() }
+
             onError("Unable to start fast simulator mirror: \(error.localizedDescription)")
             return false
         }
 
         mirrorProcess = recordProcess
+        mirrorDecoderProcess = ffmpegProcess
         mirrorInputPipe = ffmpegInput
         mirrorOutputPipe = ffmpegOutput
         mirrorErrorPipe = ffmpegError
@@ -172,15 +179,21 @@ final class IOSPerformanceService {
     }
 
     func stopMirror() {
-        mirrorInputPipe?.fileHandleForWriting.closeFile()
         mirrorOutputPipe?.fileHandleForReading.readabilityHandler = nil
         mirrorErrorPipe?.fileHandleForReading.readabilityHandler = nil
+
+        try? mirrorInputPipe?.fileHandleForWriting.close()
 
         if let process = mirrorProcess, process.isRunning {
             process.terminate()
         }
 
+        if let process = mirrorDecoderProcess, process.isRunning {
+            process.terminate()
+        }
+
         mirrorProcess = nil
+        mirrorDecoderProcess = nil
         mirrorInputPipe = nil
         mirrorOutputPipe = nil
         mirrorErrorPipe = nil
