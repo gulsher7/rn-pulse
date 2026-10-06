@@ -31,6 +31,7 @@ final class AppViewModel: ObservableObject {
     private let performanceEngine = PerformanceEngine()
 
     private var monitoringTask: Task<Void, Never>?
+    private var previewTask: Task<Void, Never>?
 
     var selectedDevice: Device? {
         devices.first { $0.id == selectedDeviceID }
@@ -87,8 +88,13 @@ final class AppViewModel: ObservableObject {
             selectedDeviceID = devices.first?.id
         }
 
-        if let device = selectedDevice, device.platform == .iOS, device.state == .booted {
-            await refreshIOSRunningApps()
+        if let device = selectedDevice {
+            if device.platform == .iOS && device.state == .booted {
+                startLivePreview()
+                await refreshIOSRunningApps()
+            } else {
+                stopLivePreview()
+            }
         }
 
         if devices.isEmpty {
@@ -100,6 +106,8 @@ final class AppViewModel: ObservableObject {
 
     func selectDevice(_ device: Device) {
         stopMonitoring()
+        stopLivePreview()
+
         selectedDeviceID = device.id
         selectedIOSAppID = nil
         iosRunningApps = []
@@ -108,9 +116,10 @@ final class AppViewModel: ObservableObject {
         performanceSnapshots = []
 
         if device.platform == .iOS && device.state == .booted {
+            startLivePreview()
             Task { await refreshIOSRunningApps() }
         } else if device.platform == .iOS {
-            statusMessage = "Boot \(device.name) to monitor a running app."
+            statusMessage = "Boot \(device.name) to mirror and monitor it."
         }
     }
 
@@ -137,7 +146,7 @@ final class AppViewModel: ObservableObject {
             }
 
             if apps.isEmpty {
-                statusMessage = "No running apps found on \(device.name). Launch your app from Xcode or Simulator, then refresh."
+                statusMessage = "No running apps found. Launch your app from Xcode or Simulator, then refresh."
             } else {
                 statusMessage = "Found \(apps.count) running app(s) on \(device.name)."
             }
@@ -153,8 +162,36 @@ final class AppViewModel: ObservableObject {
         selectedIOSAppID = app.id
         latestSnapshot = nil
         performanceSnapshots = []
-        livePreviewData = nil
         statusMessage = "Ready to monitor \(app.bundleID)."
+    }
+
+    func startLivePreview() {
+        guard let device = selectedDevice,
+              device.platform == .iOS,
+              device.state == .booted else {
+            return
+        }
+
+        stopLivePreview()
+
+        previewTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                if let screenshot = try? await self.iosPerformanceService.captureScreenshot(
+                    deviceID: device.id
+                ) {
+                    self.livePreviewData = screenshot
+                }
+
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    func stopLivePreview() {
+        previewTask?.cancel()
+        previewTask = nil
     }
 
     func startMonitoring() {
@@ -187,8 +224,8 @@ final class AppViewModel: ObservableObject {
 
             while !Task.isCancelled {
                 do {
-                    let snapshot = try await self.iosPerformanceService.capture(
-                        deviceID: device.id,
+                    let snapshot = try await self.performanceEngine.capture(
+                        device: device,
                         app: app
                     )
                     self.latestSnapshot = snapshot
@@ -196,13 +233,8 @@ final class AppViewModel: ObservableObject {
                 } catch {
                     self.statusMessage = error.localizedDescription
                     await self.refreshIOSRunningApps()
+                    self.stopMonitoring()
                     break
-                }
-
-                if let screenshot = try? await self.iosPerformanceService.captureScreenshot(
-                    deviceID: device.id
-                ) {
-                    self.livePreviewData = screenshot
                 }
 
                 try? await Task.sleep(for: .milliseconds(700))
