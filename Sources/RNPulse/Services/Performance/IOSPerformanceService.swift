@@ -528,7 +528,7 @@ private enum CoreAnimationFPSParser {
         valuesByID: [String: String]
     ) -> String? {
         let escapedTag = NSRegularExpression.escapedPattern(for: tag)
-        let pattern = "<(escapedTag)\\b([^>]*)>"
+        let pattern = "<\\(escapedTag)\\b([^>]*)>"
 
         guard let attributes = firstMatch(of: pattern, in: row)?.first else {
             return nil
@@ -574,7 +574,7 @@ private enum CoreAnimationFPSParser {
 
     private static func attribute(named name: String, in attributes: String) -> String? {
         let escapedName = NSRegularExpression.escapedPattern(for: name)
-        let pattern = "\\b(escapedName)=\"([^\"]*)\""
+        let pattern = "\\b\\(escapedName)=\"([^\"]*)\""
         return firstMatch(of: pattern, in: attributes)?.first
     }
 
