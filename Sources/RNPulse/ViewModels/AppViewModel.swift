@@ -17,6 +17,8 @@ final class AppViewModel: ObservableObject {
     @Published var livePreviewData: Data?
     @Published var isLaunchingIOSApp = false
 
+    @Published var iosAppSearchText = ""
+
     @Published var environment: EnvironmentSnapshot?
     @Published var isRefreshing = false
     @Published var isRunning = false
@@ -138,6 +140,7 @@ final class AppViewModel: ObservableObject {
         selectedIOSInstalledAppID = nil
         iosRunningApps = []
         iosInstalledApps = []
+        iosAppSearchText = ""
         livePreviewData = nil
         latestSnapshot = nil
         performanceSnapshots = []
@@ -326,29 +329,36 @@ final class AppViewModel: ObservableObject {
             deviceID: device.id,
             onFrame: { [weak self] frame in
                 Task { @MainActor in
-                    self?.livePreviewData = frame
+                    guard let self else { return }
+
+                    self.livePreviewData = frame
+
+                    // The stream is preferred. Once it produces a frame, stop
+                    // the slower screenshot fallback.
+                    self.previewFallbackTask?.cancel()
+                    self.previewFallbackTask = nil
                 }
             },
             onError: { [weak self] message in
                 Task { @MainActor in
-                    // ffmpeg startup failures trigger the screenshot fallback.
-                    if message.localizedCaseInsensitiveContains("ffmpeg was not found")
-                       || message.localizedCaseInsensitiveContains("unable to start fast simulator mirror") {
+                    if message.localizedCaseInsensitiveContains("ffmpeg")
+                        || message.localizedCaseInsensitiveContains("mirror") {
                         self?.statusMessage = message
                     }
                 }
             }
         )
 
-        guard !started else {
-            statusMessage = "Live simulator mirror connected."
-            return
-        }
-
-        // Fallback for Macs without ffmpeg. This is intentionally slower but
-        // keeps the basic preview functional.
+        // Keep the native stream as the primary mirror. If it does not
+        // deliver its first frame shortly after startup, use simctl
+        // screenshots so the preview still works on the current Xcode/runtime.
         previewFallbackTask = Task { [weak self] in
             guard let self else { return }
+
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled, self.livePreviewData == nil else {
+                return
+            }
 
             while !Task.isCancelled {
                 if let screenshot = try? await self.iosPerformanceService.captureScreenshot(
@@ -357,8 +367,14 @@ final class AppViewModel: ObservableObject {
                     self.livePreviewData = screenshot
                 }
 
-                try? await Task.sleep(for: .milliseconds(700))
+                try? await Task.sleep(for: .milliseconds(400))
             }
+        }
+
+        if started {
+            statusMessage = "Connecting to simulator mirror…"
+        } else {
+            statusMessage = "Using simulator screenshot preview…"
         }
     }
 
