@@ -540,7 +540,7 @@ final class IOSPerformanceService {
     }
 }
 
-private struct IOSThreadPerformanceMetrics: Sendable {
+struct IOSThreadPerformanceMetrics: Sendable {
     let fps: Double
     let jsPercent: Double?
     let uiPercent: Double?
