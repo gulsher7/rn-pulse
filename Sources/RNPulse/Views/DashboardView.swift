@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct DashboardView: View {
@@ -199,7 +200,7 @@ private struct PerformancePanel: View {
                     Spacer()
 
                     if !viewModel.performanceSnapshots.isEmpty {
-                        Text("(viewModel.performanceSnapshots.count) samples")
+                        Text("\(viewModel.performanceSnapshots.count) samples")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -254,7 +255,7 @@ private struct PerformancePanel: View {
                             Text(app.bundleID)
                                 .font(.callout.bold())
 
-                            Text("PID (app.processID) • (app.processName)")
+                            Text("PID \(app.processID) • \(app.processName)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -298,7 +299,7 @@ private struct PerformancePanel: View {
                         Image(systemName: code == 0 ? "checkmark.circle.fill" : "xmark.circle.fill")
                             .foregroundStyle(code == 0 ? .green : .red)
 
-                        Text(code == 0 ? "Test passed" : "Test failed (exit code (code))")
+                        Text(code == 0 ? "Test passed" : "Test failed (exit code \(code))")
                             .font(.callout.bold())
                     }
                 }
