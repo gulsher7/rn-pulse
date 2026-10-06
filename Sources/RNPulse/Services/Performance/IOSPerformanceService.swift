@@ -117,9 +117,10 @@ final class IOSPerformanceService {
             "xctrace",
             "record",
             "--instrument", "Core Animation FPS",
+            "--instrument", "Time Profiler",
             "--device", deviceID,
             "--attach", app.processName,
-            "--time-limit", "(max(durationSeconds, 3))s",
+            "--time-limit", "\\(max(durationSeconds, 3))s",
             "--no-prompt",
             "--output", traceURL.path
         ]
@@ -174,7 +175,7 @@ final class IOSPerformanceService {
                         )
                     )
                 } catch {
-                    onError("Unable to read Core Animation FPS: (error.localizedDescription)")
+                    onError("Unable to read iOS performance trace: \\(error.localizedDescription)")
                 }
             }
         }
@@ -183,7 +184,7 @@ final class IOSPerformanceService {
             try process.run()
         } catch {
             errorPipe.fileHandleForReading.readabilityHandler = nil
-            onError("Unable to start Core Animation FPS recording: (error.localizedDescription)")
+            onError("Unable to start iOS performance recording: \\(error.localizedDescription)")
             return false
         }
 
@@ -552,63 +553,64 @@ private struct ThreadPerformanceResult {
 
 private enum ThreadPerformanceParser {
     static func parse(_ xml: String) -> ThreadPerformanceResult {
-        let rows = matches(
-            of: "<row>(.*?)</row>",
-            in: xml
+        let rows = matches(of: "<row>(.*?)</row>", in: xml)
+
+        let threadNames = definitions(
+            of: "thread",
+            in: xml,
+            prefersFormat: true
         )
 
-        let threadDefinitions = definitions(
-            of: "thread",
-            in: xml
-        )
-        let weightDefinitions = definitions(
+        let weights = definitions(
             of: "weight",
-            in: xml
+            in: xml,
+            prefersFormat: false
         )
-        var stateDefinitions = definitions(
+
+        let states = definitions(
             of: "thread-state",
-            in: xml
+            in: xml,
+            prefersFormat: true
         )
 
         var totalWeight = 0.0
         var jsWeight = 0.0
         var uiWeight = 0.0
 
-        for rowParts in rows {
-            guard let row = rowParts.first else { continue }
-
-            let threadName = referencedValue(
-                tag: "thread",
-                in: row,
-                definitions: threadDefinitions
-            )
+        for rowMatch in rows {
+            guard let row = rowMatch.first else { continue }
 
             guard let weightText = referencedValue(
                 tag: "weight",
                 in: row,
-                definitions: weightDefinitions
+                definitions: weights
             ),
-            let weight = Double(weightText.trimmingCharacters(in: .whitespacesAndNewlines)),
+            let weight = Double(
+                weightText.trimmingCharacters(in: .whitespacesAndNewlines)
+            ),
             weight > 0 else {
                 continue
             }
 
-            // Time Profiler samples represent CPU-running samples. Keep a
-            // state check when the export provides one, but accept rows with
-            // no explicit state because some xctrace versions omit it.
             if let state = referencedValue(
                 tag: "thread-state",
                 in: row,
-                definitions: stateDefinitions
+                definitions: states
             ),
             !state.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             !state.localizedCaseInsensitiveContains("running") {
                 continue
             }
 
-            totalWeight += weight
+            guard let threadName = referencedValue(
+                tag: "thread",
+                in: row,
+                definitions: threadNames
+            ) else {
+                continue
+            }
 
-            guard let threadName else { continue }
+            totalWeight += weight
 
             if isJSThread(threadName) {
                 jsWeight += weight
@@ -627,8 +629,12 @@ private enum ThreadPerformanceParser {
         }
 
         return ThreadPerformanceResult(
-            jsPercent: jsWeight > 0 ? (jsWeight / totalWeight) * 100.0 : nil,
-            uiPercent: uiWeight > 0 ? (uiWeight / totalWeight) * 100.0 : nil
+            jsPercent: jsWeight > 0
+                ? (jsWeight / totalWeight) * 100.0
+                : nil,
+            uiPercent: uiWeight > 0
+                ? (uiWeight / totalWeight) * 100.0
+                : nil
         )
     }
 
@@ -658,15 +664,15 @@ private enum ThreadPerformanceParser {
     ) -> String? {
         let escapedTag = NSRegularExpression.escapedPattern(for: tag)
 
-        if let inline = firstMatch(
-            of: "<\(escapedTag)\\b[^>]*\\bfmt=\"([^\"]*)\"[^>]*>",
+        if let inlineFormat = firstMatch(
+            of: "<\\(escapedTag)\\b[^>]*\\bfmt=\"([^\"]*)\"[^>]*>",
             in: row
         )?.first {
-            return inline
+            return inlineFormat
         }
 
         if let inlineText = firstMatch(
-            of: "<\(escapedTag)\\b[^>]*>(.*?)</\(escapedTag)>",
+            of: "<\\(escapedTag)\\b[^>]*>(.*?)</\\(escapedTag)>",
             in: row
         )?.first,
         !inlineText.isEmpty {
@@ -674,7 +680,7 @@ private enum ThreadPerformanceParser {
         }
 
         if let reference = firstMatch(
-            of: "<\(escapedTag)\\b[^>]*\\bref=\"([^\"]+)\\"[^>]*/?>",
+            of: "<\\(escapedTag)\\b[^>]*\\bref=\"([^\"]+)\"[^>]*/?>",
             in: row
         )?.first {
             return definitions[reference]
@@ -685,23 +691,26 @@ private enum ThreadPerformanceParser {
 
     private static func definitions(
         of tag: String,
-        in xml: String
+        in xml: String,
+        prefersFormat: Bool
     ) -> [String: String] {
         let escapedTag = NSRegularExpression.escapedPattern(for: tag)
-        let pattern = "<\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*>(.*?)</\(escapedTag)>"
-
         var values: [String: String] = [:]
 
-        for match in matches(of: pattern, in: xml) {
+        let formatPattern =
+            "<\\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*\\bfmt=\"([^\"]*)\"[^>]*>"
+        for match in matches(of: formatPattern, in: xml) {
             guard match.count >= 2 else { continue }
             values[match[0]] = match[1]
         }
 
-        // Some xctrace exports put fmt directly on self-closing definitions.
-        let fmtPattern = "<\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*\\bfmt=\"([^\"]*)\"[^>]*/>"
-        for match in matches(of: fmtPattern, in: xml) {
+        let textPattern =
+            "<\\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*>(.*?)</\\(escapedTag)>"
+        for match in matches(of: textPattern, in: xml) {
             guard match.count >= 2 else { continue }
-            values[match[0]] = match[1]
+            if !prefersFormat || values[match[0]] == nil {
+                values[match[0]] = match[1]
+            }
         }
 
         return values
