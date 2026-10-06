@@ -60,7 +60,7 @@ private struct SidebarView: View {
                                     device: device,
                                     isSelected: viewModel.selectedDeviceID == device.id
                                 ) {
-                                    viewModel.selectedDeviceID = device.id
+                                    viewModel.selectDevice(device)
                                 }
                             }
                         }
@@ -78,10 +78,14 @@ private struct SidebarView: View {
                 .disabled(viewModel.isRefreshing)
             }
 
+            if viewModel.selectedDevice?.platform == .iOS {
+                IOSRunningAppsSection()
+            }
+
             Section("Maestro Flows") {
                 if viewModel.flows.isEmpty {
                     Text(viewModel.projectURL == nil
-                         ? "Choose a project first."
+                         ? "Optional — choose a project to use Maestro."
                          : "No YAML flows found.")
                         .foregroundStyle(.secondary)
                 } else {
@@ -122,6 +126,63 @@ private struct SidebarView: View {
         .safeAreaInset(edge: .bottom) {
             EnvironmentSummary()
                 .padding(10)
+        }
+    }
+}
+
+private struct IOSRunningAppsSection: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+
+    var body: some View {
+        Section("Running iOS Apps") {
+            if viewModel.selectedDevice?.state != .booted {
+                Text("Boot the selected simulator first.")
+                    .foregroundStyle(.secondary)
+            } else if viewModel.iosRunningApps.isEmpty {
+                Text("No running apps detected.")
+                    .foregroundStyle(.secondary)
+
+                Text("Launch your app from Xcode or Simulator, then refresh.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.iosRunningApps) { app in
+                    Button {
+                        viewModel.selectIOSApp(app)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(app.displayName)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Text(app.bundleID)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+
+                            Text("PID \(app.processID)")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(viewModel.selectedIOSAppID == app.id
+                                  ? Color.accentColor.opacity(0.14)
+                                  : Color.clear)
+                    )
+                }
+            }
+
+            Button {
+                Task { await viewModel.refreshIOSRunningApps() }
+            } label: {
+                Label("Refresh Running Apps", systemImage: "arrow.clockwise")
+            }
+            .disabled(viewModel.isRunning)
         }
     }
 }
