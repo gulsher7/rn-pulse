@@ -33,25 +33,40 @@ struct IOSSimulatorService {
     }
 
     func boot(deviceID: String) async throws {
-        let result = try await runner.run(
+        // Read the real simulator state first. This avoids treating an
+        // already-booted simulator as a boot failure.
+        let state = try? await runner.run(
             "/usr/bin/xcrun",
-            arguments: ["simctl", "boot", deviceID],
-            timeout: 30
+            arguments: ["simctl", "get_state", deviceID],
+            timeout: 10
         )
 
-        // simctl returns a non-zero status when the device is already booted.
-        if result.exitCode != 0,
-           !result.stderr.localizedCaseInsensitiveContains("already booted") {
-            throw NSError(
-                domain: "RNPulse.iOS",
-                code: Int(result.exitCode),
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        result.stderr.isEmpty
-                        ? "Unable to boot the simulator."
-                        : result.stderr
-                ]
+        let isBooted = state?.exitCode == 0 &&
+            state?.stdout
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveContains("booted") == true
+
+        if !isBooted {
+            let result = try await runner.run(
+                "/usr/bin/xcrun",
+                arguments: ["simctl", "boot", deviceID],
+                timeout: 30
             )
+
+            if result.exitCode != 0,
+               !result.stderr.localizedCaseInsensitiveContains("already booted"),
+               !result.stderr.localizedCaseInsensitiveContains("current state: Booted") {
+                throw NSError(
+                    domain: "RNPulse.iOS",
+                    code: Int(result.exitCode),
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            result.stderr.isEmpty
+                            ? "Unable to boot the simulator."
+                            : result.stderr
+                    ]
+                )
+            }
         }
 
         let bootStatus = try await runner.run(
@@ -152,17 +167,7 @@ struct IOSSimulatorService {
         bundleID: String,
         measureFirstFrame: Bool = true
     ) async throws -> IOSLaunchResult {
-        let isBooted = try await isDeviceBooted(deviceID: deviceID)
-        guard isBooted else {
-            throw NSError(
-                domain: "RNPulse.iOS",
-                code: 10,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "Boot the simulator before launching an app."
-                ]
-            )
-        }
+        try await boot(deviceID: deviceID)
 
         // Make launch timing reproducible: terminate the current instance and
         // give SpringBoard a moment to settle before starting the new launch.
@@ -185,7 +190,7 @@ struct IOSSimulatorService {
                 userInfo: [
                     NSLocalizedDescriptionKey:
                         result.stderr.isEmpty
-                        ? "Unable to launch (bundleID)."
+                        ? "Unable to launch \\(bundleID)."
                         : result.stderr
                 ]
             )
@@ -214,18 +219,6 @@ struct IOSSimulatorService {
             app: runningApp,
             startupMS: startupMS
         )
-    }
-
-    private func isDeviceBooted(deviceID: String) async throws -> Bool {
-        let result = try await runner.run(
-            "/usr/bin/xcrun",
-            arguments: ["simctl", "get_state", deviceID],
-            timeout: 10
-        )
-
-        return result.exitCode == 0 &&
-            result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            .localizedCaseInsensitiveContains("booted")
     }
 
     private func waitForRunningApp(
@@ -295,6 +288,17 @@ struct IOSSimulatorService {
 
         return plist.compactMap { bundleID, rawValue in
             guard let info = rawValue as? [String: Any] else {
+                return nil
+            }
+
+            if let applicationType = info["ApplicationType"] as? String,
+               !applicationType.localizedCaseInsensitiveContains("User") {
+                return nil
+            }
+
+            let packageType = info["CFBundlePackageType"] as? String
+            if let packageType,
+               !packageType.localizedCaseInsensitiveCompare("APPL").isOrderedSame {
                 return nil
             }
 
