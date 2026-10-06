@@ -16,11 +16,14 @@ final class AppViewModel: ObservableObject {
     @Published var statusMessage = "Select a project to get started."
     @Published var processOutput = ""
     @Published var lastExitCode: Int32?
+    @Published var latestSnapshot: PerformanceSnapshot?
+    @Published var performanceSnapshots: [PerformanceSnapshot] = []
 
     private let environmentService = EnvironmentService()
     private let androidService = AndroidDeviceService()
     private let iosService = IOSSimulatorService()
     private let maestroService = MaestroService()
+    private let performanceEngine = PerformanceEngine()
 
     var selectedDevice: Device? {
         devices.first { $0.id == selectedDeviceID }
@@ -116,7 +119,27 @@ final class AppViewModel: ObservableObject {
         isRunning = true
         processOutput = ""
         lastExitCode = nil
+        latestSnapshot = nil
+        performanceSnapshots = []
         statusMessage = "Running \(flow.name) on \(device.name)…"
+
+        let sampler = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                if let snapshot = try? await self.performanceEngine.capture(device: device, flow: flow) {
+                    self.latestSnapshot = snapshot
+                    self.performanceSnapshots.append(snapshot)
+                }
+
+                try? await Task.sleep(for: .milliseconds(750))
+            }
+        }
+
+        defer {
+            sampler.cancel()
+            isRunning = false
+        }
 
         do {
             let result = try await maestroService.run(flow: flow, device: device)
@@ -132,7 +155,5 @@ final class AppViewModel: ObservableObject {
             statusMessage = "Unable to run Maestro: \(error.localizedDescription)"
             processOutput += "\n\(error.localizedDescription)"
         }
-
-        isRunning = false
     }
 }
