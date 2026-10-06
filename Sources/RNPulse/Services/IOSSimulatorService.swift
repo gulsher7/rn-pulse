@@ -265,7 +265,7 @@ struct IOSSimulatorService {
             if let screenshot = try? await performanceService.captureScreenshot(
                 deviceID: deviceID
             ),
-            Self.imagesLookDifferent(baseline, screenshot) {
+            imagesLookDifferent(baseline, screenshot) {
                 return Self.durationMS(since: startedAt)
             }
 
