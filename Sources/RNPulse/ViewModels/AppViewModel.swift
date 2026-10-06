@@ -211,6 +211,10 @@ final class AppViewModel: ObservableObject {
         statusMessage = "Ready to launch (app.bundleID)."
     }
 
+    func openSimulator() async throws {
+        try await iosService.openSimulator()
+    }
+
     func runSimulator(_ device: Device) {
         guard device.platform == .iOS else { return }
 
