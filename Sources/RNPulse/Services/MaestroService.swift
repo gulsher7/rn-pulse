@@ -60,7 +60,7 @@ struct MaestroService {
 
         var name: String?
         var appId: String?
-        var tags: [String] = []
+        let tags: [String] = []
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
