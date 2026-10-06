@@ -291,7 +291,7 @@ final class AppViewModel: ObservableObject {
             deviceID: device.id,
             app: app,
             durationSeconds: 5,
-            onResult: { [weak self] fps in
+            onResult: { [weak self] metrics in
                 Task { @MainActor in
                     guard let self, self.isRunning else { return }
 
@@ -300,8 +300,10 @@ final class AppViewModel: ObservableObject {
                             timestamp: .now,
                             cpuPercent: latest.cpuPercent,
                             memoryMB: latest.memoryMB,
-                            fps: fps,
-                            startupMS: latest.startupMS
+                            fps: metrics.fps,
+                            startupMS: latest.startupMS,
+                            jsThreadPercent: metrics.jsPercent,
+                            uiThreadPercent: metrics.uiPercent
                         )
 
                         self.latestSnapshot = updated
@@ -324,7 +326,7 @@ final class AppViewModel: ObservableObject {
         )
 
         if !started {
-            statusMessage = "Unable to start native iOS FPS recording."
+            statusMessage = "Unable to start native iOS performance recording."
         }
     }
 
