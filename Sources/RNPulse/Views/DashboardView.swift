@@ -50,20 +50,38 @@ private struct HeaderView: View {
             }
 
             if viewModel.selectedDevice?.platform == .iOS {
-                Button {
-                    if viewModel.isRunning {
-                        viewModel.stopMonitoring()
-                    } else {
-                        viewModel.startMonitoring()
-                    }
-                } label: {
-                    Label(
-                        viewModel.isRunning ? "Stop Monitoring" : "Start Monitoring",
-                        systemImage: viewModel.isRunning ? "stop.fill" : "waveform.path.ecg"
-                    )
+                if viewModel.isLaunchingIOSApp {
+                    ProgressView()
+                        .controlSize(.small)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.isRunning && !viewModel.canStartMonitoring)
+
+                if viewModel.isRunning {
+                    Button {
+                        viewModel.stopMonitoring()
+                    } label: {
+                        Label("Stop Monitoring", systemImage: "stop.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else if viewModel.selectedIOSInstalledApp != nil {
+                    Button {
+                        viewModel.runSelectedIOSApp()
+                    } label: {
+                        Label("Run & Monitor", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        !viewModel.canLaunchSelectedIOSApp
+                        || viewModel.isLaunchingIOSApp
+                    )
+                } else {
+                    Button {
+                        viewModel.startMonitoring()
+                    } label: {
+                        Label("Start Monitoring", systemImage: "waveform.path.ecg")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!viewModel.canStartMonitoring)
+                }
             } else {
                 Button {
                     Task { await viewModel.runSelectedFlow() }
@@ -308,13 +326,13 @@ private struct PerformancePanel: View {
                         icon: "timer"
                     )
                     MetricCard(
-                        title: "JS Thread",
+                        title: "JS Thread CPU",
                         value: formatted(snapshot?.jsThreadPercent),
                         unit: "%",
                         icon: "curlybraces"
                     )
                     MetricCard(
-                        title: "UI Thread",
+                        title: "UI Thread CPU",
                         value: formatted(snapshot?.uiThreadPercent),
                         unit: "%",
                         icon: "rectangle.3.group"
@@ -394,7 +412,7 @@ private struct PerformancePanel: View {
                         Text(
                             code == 0
                                 ? "Test passed"
-                                : "Test failed (exit code (code))"
+                                : "Test failed (exit code \(code))"
                         )
                         .font(.callout.bold())
                     }
