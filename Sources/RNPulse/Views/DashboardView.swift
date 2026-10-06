@@ -270,7 +270,7 @@ private struct PerformancePanel: View {
                     Spacer()
 
                     if !viewModel.performanceSnapshots.isEmpty {
-                        Text("(viewModel.performanceSnapshots.count) samples")
+                        Text("\(viewModel.performanceSnapshots.count) samples")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -307,12 +307,24 @@ private struct PerformancePanel: View {
                         unit: "ms",
                         icon: "timer"
                     )
+                    MetricCard(
+                        title: "JS Thread",
+                        value: formatted(snapshot?.jsThreadPercent),
+                        unit: "%",
+                        icon: "curlybraces"
+                    )
+                    MetricCard(
+                        title: "UI Thread",
+                        value: formatted(snapshot?.uiThreadPercent),
+                        unit: "%",
+                        icon: "rectangle.3.group"
+                    )
                 }
 
                 if viewModel.selectedDevice?.platform == .iOS {
                     InfoBanner(
                         title: "iOS Simulator monitoring",
-                        message: "CPU and memory are sampled from the Simulator app process. FPS is collected from Xcode Instruments Core Animation FPS, not from the mirror stream. RN Pulse never uses the mirror frame rate as app FPS."
+                        message: "CPU and memory are sampled from the Simulator app process. FPS comes from Core Animation FPS. JS Thread and UI Thread show each thread's share of the app's Time Profiler CPU samples. RN Pulse never uses the mirror frame rate as app FPS."
                     )
                 }
 
@@ -325,7 +337,7 @@ private struct PerformancePanel: View {
                             Text(app.bundleID)
                                 .font(.callout.bold())
 
-                            Text("PID (app.processID) • (app.processName)")
+                            Text("PID \(app.processID) • \(app.processName)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
