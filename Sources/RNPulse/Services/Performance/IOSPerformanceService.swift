@@ -15,6 +15,8 @@ final class IOSPerformanceService {
 
     private let fpsLock = NSLock()
     private var latestFPS: Double?
+    private var latestJSPercent: Double?
+    private var latestUIPercent: Double?
 
     func discoverRunningApps(deviceID: String) async throws -> [IOSRunningApp] {
         let result = try await runner.run(
@@ -82,7 +84,9 @@ final class IOSPerformanceService {
         return PerformanceSnapshot(
             cpuPercent: values[0],
             memoryMB: values[1] / 1024.0,
-            fps: currentFPS()
+            fps: currentFPS(),
+            jsThreadPercent: currentJSPercent(),
+            uiThreadPercent: currentUIPercent()
         )
     }
 
@@ -94,7 +98,7 @@ final class IOSPerformanceService {
         deviceID: String,
         app: IOSRunningApp,
         durationSeconds: Int = 5,
-        onResult: @escaping @Sendable (Double) -> Void,
+        onResult: @escaping @Sendable (IOSThreadPerformanceMetrics) -> Void,
         onError: @escaping @Sendable (String) -> Void
     ) -> Bool {
         stopFPSRecording()
@@ -154,8 +158,21 @@ final class IOSPerformanceService {
 
                 do {
                     let fps = try await self.exportFPS(from: traceURL)
+                    let threadMetrics = try await self.exportThreadPerformance(from: traceURL)
+
                     self.setLatestFPS(fps)
-                    onResult(fps)
+                    self.setLatestThreadMetrics(
+                        jsPercent: threadMetrics.jsPercent,
+                        uiPercent: threadMetrics.uiPercent
+                    )
+
+                    onResult(
+                        IOSThreadPerformanceMetrics(
+                            fps: fps,
+                            jsPercent: threadMetrics.jsPercent,
+                            uiPercent: threadMetrics.uiPercent
+                        )
+                    )
                 } catch {
                     onError("Unable to read Core Animation FPS: (error.localizedDescription)")
                 }
@@ -192,9 +209,28 @@ final class IOSPerformanceService {
         return latestFPS
     }
 
+    private func currentJSPercent() -> Double? {
+        fpsLock.lock()
+        defer { fpsLock.unlock() }
+        return latestJSPercent
+    }
+
+    private func currentUIPercent() -> Double? {
+        fpsLock.lock()
+        defer { fpsLock.unlock() }
+        return latestUIPercent
+    }
+
     private func setLatestFPS(_ value: Double?) {
         fpsLock.lock()
         latestFPS = value
+        fpsLock.unlock()
+    }
+
+    private func setLatestThreadMetrics(jsPercent: Double?, uiPercent: Double?) {
+        fpsLock.lock()
+        latestJSPercent = jsPercent
+        latestUIPercent = uiPercent
         fpsLock.unlock()
     }
 
@@ -235,6 +271,35 @@ final class IOSPerformanceService {
         }
 
         return fps
+    }
+
+    private func exportThreadPerformance(
+        from traceURL: URL
+    ) async throws -> ThreadPerformanceResult {
+        let result = try await runner.run(
+            "/usr/bin/xcrun",
+            arguments: [
+                "xctrace",
+                "export",
+                "--input", traceURL.path,
+                "--xpath", "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"time-profile\"]"
+            ],
+            timeout: 30
+        )
+
+        guard result.exitCode == 0 else {
+            throw NSError(
+                domain: "RNPulse.iOS",
+                code: Int(result.exitCode),
+                userInfo: [
+                    NSLocalizedDescriptionKey: result.stderr.isEmpty
+                        ? "xctrace could not export Time Profiler data."
+                        : result.stderr
+                ]
+            )
+        }
+
+        return ThreadPerformanceParser.parse(result.stdout)
     }
 
     private func sendSIGINT(to process: Process) {
@@ -470,6 +535,223 @@ final class IOSPerformanceService {
 
         return apps.sorted {
             $0.bundleID.localizedCaseInsensitiveCompare($1.bundleID) == .orderedAscending
+        }
+    }
+}
+
+private struct IOSThreadPerformanceMetrics: Sendable {
+    let fps: Double
+    let jsPercent: Double?
+    let uiPercent: Double?
+}
+
+private struct ThreadPerformanceResult {
+    let jsPercent: Double?
+    let uiPercent: Double?
+}
+
+private enum ThreadPerformanceParser {
+    static func parse(_ xml: String) -> ThreadPerformanceResult {
+        let rows = matches(
+            of: "<row>(.*?)</row>",
+            in: xml
+        )
+
+        let threadDefinitions = definitions(
+            of: "thread",
+            in: xml
+        )
+        let weightDefinitions = definitions(
+            of: "weight",
+            in: xml
+        )
+        var stateDefinitions = definitions(
+            of: "thread-state",
+            in: xml
+        )
+
+        var totalWeight = 0.0
+        var jsWeight = 0.0
+        var uiWeight = 0.0
+
+        for rowParts in rows {
+            guard let row = rowParts.first else { continue }
+
+            let threadName = referencedValue(
+                tag: "thread",
+                in: row,
+                definitions: threadDefinitions
+            )
+
+            guard let weightText = referencedValue(
+                tag: "weight",
+                in: row,
+                definitions: weightDefinitions
+            ),
+            let weight = Double(weightText.trimmingCharacters(in: .whitespacesAndNewlines)),
+            weight > 0 else {
+                continue
+            }
+
+            // Time Profiler samples represent CPU-running samples. Keep a
+            // state check when the export provides one, but accept rows with
+            // no explicit state because some xctrace versions omit it.
+            if let state = referencedValue(
+                tag: "thread-state",
+                in: row,
+                definitions: stateDefinitions
+            ),
+            !state.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            !state.localizedCaseInsensitiveContains("running") {
+                continue
+            }
+
+            totalWeight += weight
+
+            guard let threadName else { continue }
+
+            if isJSThread(threadName) {
+                jsWeight += weight
+            }
+
+            if isUIThread(threadName) {
+                uiWeight += weight
+            }
+        }
+
+        guard totalWeight > 0 else {
+            return ThreadPerformanceResult(
+                jsPercent: nil,
+                uiPercent: nil
+            )
+        }
+
+        return ThreadPerformanceResult(
+            jsPercent: jsWeight > 0 ? (jsWeight / totalWeight) * 100.0 : nil,
+            uiPercent: uiWeight > 0 ? (uiWeight / totalWeight) * 100.0 : nil
+        )
+    }
+
+    private static func isJSThread(_ name: String) -> Bool {
+        let normalized = name.lowercased()
+
+        return normalized.contains("com.facebook.react.javascript")
+            || normalized.contains("react.javascript")
+            || normalized.contains("mqt_js")
+            || normalized.contains("javascript thread")
+            || normalized == "js"
+    }
+
+    private static func isUIThread(_ name: String) -> Bool {
+        let normalized = name.lowercased()
+
+        return normalized == "main thread"
+            || normalized == "mainthread"
+            || normalized.contains("com.apple.main-thread")
+            || normalized.contains("main thread")
+    }
+
+    private static func referencedValue(
+        tag: String,
+        in row: String,
+        definitions: [String: String]
+    ) -> String? {
+        let escapedTag = NSRegularExpression.escapedPattern(for: tag)
+
+        if let inline = firstMatch(
+            of: "<\(escapedTag)\\b[^>]*\\bfmt=\"([^\"]*)\"[^>]*>",
+            in: row
+        )?.first {
+            return inline
+        }
+
+        if let inlineText = firstMatch(
+            of: "<\(escapedTag)\\b[^>]*>(.*?)</\(escapedTag)>",
+            in: row
+        )?.first,
+        !inlineText.isEmpty {
+            return inlineText
+        }
+
+        if let reference = firstMatch(
+            of: "<\(escapedTag)\\b[^>]*\\bref=\"([^\"]+)\\"[^>]*/?>",
+            in: row
+        )?.first {
+            return definitions[reference]
+        }
+
+        return nil
+    }
+
+    private static func definitions(
+        of tag: String,
+        in xml: String
+    ) -> [String: String] {
+        let escapedTag = NSRegularExpression.escapedPattern(for: tag)
+        let pattern = "<\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*>(.*?)</\(escapedTag)>"
+
+        var values: [String: String] = [:]
+
+        for match in matches(of: pattern, in: xml) {
+            guard match.count >= 2 else { continue }
+            values[match[0]] = match[1]
+        }
+
+        // Some xctrace exports put fmt directly on self-closing definitions.
+        let fmtPattern = "<\(escapedTag)\\b[^>]*\\bid=\"([^\"]+)\"[^>]*\\bfmt=\"([^\"]*)\"[^>]*/>"
+        for match in matches(of: fmtPattern, in: xml) {
+            guard match.count >= 2 else { continue }
+            values[match[0]] = match[1]
+        }
+
+        return values
+    }
+
+    private static func firstMatch(
+        of pattern: String,
+        in string: String
+    ) -> [String]? {
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.dotMatchesLineSeparators]
+        ),
+        let match = regex.firstMatch(
+            in: string,
+            range: NSRange(string.startIndex..., in: string)
+        ) else {
+            return nil
+        }
+
+        return (1..<match.numberOfRanges).compactMap { index in
+            guard let range = Range(match.range(at: index), in: string) else {
+                return nil
+            }
+
+            return String(string[range])
+        }
+    }
+
+    private static func matches(
+        of pattern: String,
+        in string: String
+    ) -> [[String]] {
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.dotMatchesLineSeparators]
+        ) else {
+            return []
+        }
+
+        let range = NSRange(string.startIndex..., in: string)
+
+        return regex.matches(in: string, range: range).map { match in
+            (1..<match.numberOfRanges).compactMap { index in
+                guard let range = Range(match.range(at: index), in: string) else {
+                    return nil
+                }
+
+                return String(string[range])
+            }
         }
     }
 }
