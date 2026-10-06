@@ -246,6 +246,8 @@ final class AppViewModel: ObservableObject {
         performanceSnapshots = []
         statusMessage = "Monitoring \(app.bundleID) on \(device.name)…"
 
+        startIOSFPSRecording(device: device, app: app)
+
         monitoringTask = Task { [weak self] in
             guard let self else { return }
 
@@ -272,10 +274,57 @@ final class AppViewModel: ObservableObject {
     func stopMonitoring() {
         monitoringTask?.cancel()
         monitoringTask = nil
+        iosPerformanceService.stopFPSRecording()
 
         if isRunning {
             isRunning = false
             statusMessage = "Monitoring stopped."
+        }
+    }
+
+    private func startIOSFPSRecording(device: Device, app: IOSRunningApp) {
+        guard isRunning || selectedIOSAppID == app.id else {
+            return
+        }
+
+        let started = iosPerformanceService.startFPSRecording(
+            deviceID: device.id,
+            app: app,
+            durationSeconds: 5,
+            onResult: { [weak self] fps in
+                Task { @MainActor in
+                    guard let self, self.isRunning else { return }
+
+                    if let latest = self.latestSnapshot {
+                        let updated = PerformanceSnapshot(
+                            timestamp: .now,
+                            cpuPercent: latest.cpuPercent,
+                            memoryMB: latest.memoryMB,
+                            fps: fps,
+                            startupMS: latest.startupMS
+                        )
+
+                        self.latestSnapshot = updated
+
+                        if let lastIndex = self.performanceSnapshots.indices.last {
+                            self.performanceSnapshots[lastIndex] = updated
+                        }
+                    }
+
+                    self.startIOSFPSRecording(device: device, app: app)
+                }
+            },
+            onError: { [weak self] message in
+                Task { @MainActor in
+                    guard let self, self.isRunning else { return }
+
+                    self.statusMessage = message
+                }
+            }
+        )
+
+        if !started {
+            statusMessage = "Unable to start native iOS FPS recording."
         }
     }
 
