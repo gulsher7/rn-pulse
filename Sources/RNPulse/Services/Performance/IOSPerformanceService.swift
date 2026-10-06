@@ -117,9 +117,9 @@ final class IOSPerformanceService {
             "-f", "mp4",
             "-i", "pipe:0",
             "-an",
-            "-vf", "fps=15",
+            "-vf", "scale=360:-2:flags=fast_bilinear,fps=20",
             "-c:v", "mjpeg",
-            "-q:v", "6",
+            "-q:v", "7",
             "-f", "image2pipe",
             "pipe:1"
         ]
