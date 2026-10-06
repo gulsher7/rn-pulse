@@ -286,7 +286,10 @@ struct IOSSimulatorService {
             )
         }
 
-        return plist.compactMap { bundleID, rawValue in
+        return plist.compactMap { entry -> IOSInstalledApp? in
+            let bundleID = entry.key
+            let rawValue = entry.value
+
             guard let info = rawValue as? [String: Any] else {
                 return nil
             }
