@@ -123,11 +123,25 @@ private struct LivePreviewPlaceholder: View {
 private struct PerformancePanel: View {
     @EnvironmentObject private var viewModel: AppViewModel
 
+    private var snapshot: PerformanceSnapshot? {
+        viewModel.latestSnapshot
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Performance")
-                    .font(.title3.bold())
+                HStack {
+                    Text("Performance")
+                        .font(.title3.bold())
+
+                    Spacer()
+
+                    if !viewModel.performanceSnapshots.isEmpty {
+                        Text("\(viewModel.performanceSnapshots.count) samples")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 LazyVGrid(
                     columns: [
@@ -136,10 +150,37 @@ private struct PerformancePanel: View {
                     ],
                     spacing: 10
                 ) {
-                    MetricCard(title: "CPU", value: "—", unit: "%", icon: "cpu")
-                    MetricCard(title: "Memory", value: "—", unit: "MB", icon: "memorychip")
-                    MetricCard(title: "FPS", value: "—", unit: "", icon: "speedometer")
-                    MetricCard(title: "Startup", value: "—", unit: "ms", icon: "timer")
+                    MetricCard(
+                        title: "CPU",
+                        value: formatted(snapshot?.cpuPercent),
+                        unit: "%",
+                        icon: "cpu"
+                    )
+                    MetricCard(
+                        title: "Memory",
+                        value: formatted(snapshot?.memoryMB),
+                        unit: "MB",
+                        icon: "memorychip"
+                    )
+                    MetricCard(
+                        title: "FPS",
+                        value: formatted(snapshot?.fps),
+                        unit: "",
+                        icon: "speedometer"
+                    )
+                    MetricCard(
+                        title: "Startup",
+                        value: "—",
+                        unit: "ms",
+                        icon: "timer"
+                    )
+                }
+
+                if viewModel.selectedDevice?.platform == .iOS {
+                    InfoBanner(
+                        title: "iOS native metrics",
+                        message: "The iOS collector is intentionally not enabled yet. This avoids showing estimated values while xctrace integration is being implemented."
+                    )
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
@@ -184,6 +225,11 @@ private struct PerformancePanel: View {
             .padding(18)
         }
     }
+
+    private func formatted(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return String(format: "%.1f", value)
+    }
 }
 
 private struct MetricCard: View {
@@ -209,6 +255,29 @@ private struct MetricCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(13)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct InfoBanner: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.caption.bold())
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
     }
 }
 
