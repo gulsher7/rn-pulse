@@ -301,7 +301,7 @@ struct IOSSimulatorService {
 
             let packageType = info["CFBundlePackageType"] as? String
             if let packageType,
-               !packageType.localizedCaseInsensitiveCompare("APPL").isOrderedSame {
+               packageType.localizedCaseInsensitiveCompare("APPL") != .orderedSame {
                 return nil
             }
 
