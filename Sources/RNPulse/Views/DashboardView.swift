@@ -312,7 +312,7 @@ private struct PerformancePanel: View {
                 if viewModel.selectedDevice?.platform == .iOS {
                     InfoBanner(
                         title: "iOS Simulator monitoring",
-                        message: "CPU and memory are collected directly from the running simulator process. FPS and startup are shown only when a reliable native measurement is available; RN Pulse does not estimate them."
+                        message: "CPU and memory are sampled from the Simulator app process. FPS is collected from Xcode Instruments Core Animation FPS, not from the mirror stream. RN Pulse never uses the mirror frame rate as app FPS."
                     )
                 }
 
