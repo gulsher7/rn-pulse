@@ -31,7 +31,7 @@ final class AppViewModel: ObservableObject {
     private let performanceEngine = PerformanceEngine()
 
     private var monitoringTask: Task<Void, Never>?
-    private var previewTask: Task<Void, Never>?
+    private var previewFallbackTask: Task<Void, Never>?
 
     var selectedDevice: Device? {
         devices.first { $0.id == selectedDeviceID }
@@ -173,8 +173,34 @@ final class AppViewModel: ObservableObject {
         }
 
         stopLivePreview()
+        livePreviewData = nil
 
-        previewTask = Task { [weak self] in
+        let started = iosPerformanceService.startMirror(
+            deviceID: device.id,
+            onFrame: { [weak self] frame in
+                Task { @MainActor in
+                    self?.livePreviewData = frame
+                }
+            },
+            onError: { [weak self] message in
+                Task { @MainActor in
+                    // ffmpeg startup failures trigger the screenshot fallback.
+                    if message.localizedCaseInsensitiveContains("ffmpeg was not found")
+                       || message.localizedCaseInsensitiveContains("unable to start fast simulator mirror") {
+                        self?.statusMessage = message
+                    }
+                }
+            }
+        )
+
+        guard !started else {
+            statusMessage = "Live simulator mirror connected."
+            return
+        }
+
+        // Fallback for Macs without ffmpeg. This is intentionally slower but
+        // keeps the basic preview functional.
+        previewFallbackTask = Task { [weak self] in
             guard let self else { return }
 
             while !Task.isCancelled {
@@ -184,14 +210,15 @@ final class AppViewModel: ObservableObject {
                     self.livePreviewData = screenshot
                 }
 
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: .milliseconds(700))
             }
         }
     }
 
     func stopLivePreview() {
-        previewTask?.cancel()
-        previewTask = nil
+        previewFallbackTask?.cancel()
+        previewFallbackTask = nil
+        iosPerformanceService.stopMirror()
     }
 
     func startMonitoring() {
