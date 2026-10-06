@@ -79,6 +79,7 @@ private struct SidebarView: View {
             }
 
             if viewModel.selectedDevice?.platform == .iOS {
+                IOSInstalledAppsSection()
                 IOSRunningAppsSection()
             }
 
@@ -130,6 +131,115 @@ private struct SidebarView: View {
     }
 }
 
+private struct IOSInstalledAppsSection: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    @State private var searchText = ""
+
+    private var filteredApps: [IOSInstalledApp] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            return Array(viewModel.iosInstalledApps.prefix(40))
+        }
+
+        return viewModel.iosInstalledApps
+            .filter {
+                $0.displayName.localizedCaseInsensitiveContains(query)
+                || $0.bundleID.localizedCaseInsensitiveContains(query)
+            }
+            .prefix(40)
+            .map { $0 }
+    }
+
+    var body: some View {
+        Section {
+            TextField("Search installed apps", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+
+            if viewModel.iosInstalledApps.isEmpty {
+                Text("No installed apps detected.")
+                    .foregroundStyle(.secondary)
+
+                Text(
+                    viewModel.selectedDevice?.state == .booted
+                        ? "Refresh to reload the simulator's installed apps."
+                        : "Installed apps will be available even before you boot the simulator."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else {
+                ForEach(filteredApps) { app in
+                    Button {
+                        viewModel.selectIOSInstalledApp(app)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(app.displayName)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Text(app.bundleID)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(
+                                viewModel.selectedIOSInstalledAppID == app.id
+                                    ? Color.accentColor.opacity(0.14)
+                                    : Color.clear
+                            )
+                    )
+                }
+
+                if viewModel.iosInstalledApps.count > filteredApps.count {
+                    Text("Showing first \(filteredApps.count) apps")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            if let app = viewModel.selectedIOSInstalledApp {
+                Button {
+                    viewModel.runSelectedIOSApp()
+                } label: {
+                    Label(
+                        viewModel.isLaunchingIOSApp
+                            ? "Launching…"
+                            : "Run & Monitor",
+                        systemImage: viewModel.isLaunchingIOSApp
+                            ? "hourglass"
+                            : "play.fill"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!viewModel.canLaunchSelectedIOSApp || viewModel.isLaunchingIOSApp)
+            }
+
+            Button {
+                Task { await viewModel.refreshIOSInstalledApps() }
+            } label: {
+                Label("Refresh Installed Apps", systemImage: "arrow.clockwise")
+            }
+            .disabled(viewModel.isRefreshing || viewModel.isLaunchingIOSApp)
+        } header: {
+            HStack {
+                Text("Installed iOS Apps")
+
+                Spacer()
+
+                Text("\(viewModel.iosInstalledApps.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 private struct IOSRunningAppsSection: View {
     @EnvironmentObject private var viewModel: AppViewModel
 
@@ -142,7 +252,7 @@ private struct IOSRunningAppsSection: View {
                 Text("No running apps detected.")
                     .foregroundStyle(.secondary)
 
-                Text("Launch your app from Xcode or Simulator, then refresh.")
+                Text("Use Run & Monitor above or launch from Xcode.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -170,9 +280,11 @@ private struct IOSRunningAppsSection: View {
                     .padding(7)
                     .background(
                         RoundedRectangle(cornerRadius: 7)
-                            .fill(viewModel.selectedIOSAppID == app.id
-                                  ? Color.accentColor.opacity(0.14)
-                                  : Color.clear)
+                            .fill(
+                                viewModel.selectedIOSAppID == app.id
+                                    ? Color.accentColor.opacity(0.14)
+                                    : Color.clear
+                            )
                     )
                 }
             }
@@ -182,7 +294,7 @@ private struct IOSRunningAppsSection: View {
             } label: {
                 Label("Refresh Running Apps", systemImage: "arrow.clockwise")
             }
-            .disabled(viewModel.isRunning)
+            .disabled(viewModel.isRunning || viewModel.isLaunchingIOSApp)
         }
     }
 }
@@ -192,36 +304,79 @@ private struct DeviceRow: View {
     let isSelected: Bool
     let onSelect: () -> Void
 
+    @EnvironmentObject private var viewModel: AppViewModel
+
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 10) {
-                Image(systemName: device.platform == .android ? "cpu" : "iphone")
+        HStack(spacing: 6) {
+            Button(action: onSelect) {
+                HStack(spacing: 10) {
+                    Image(
+                        systemName: device.platform == .android
+                            ? "cpu"
+                            : "iphone"
+                    )
                     .frame(width: 22)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(device.name)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(device.name)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
 
-                    Text(device.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        Text(device.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    Circle()
+                        .fill(
+                            device.state == .booted
+                                || device.state == .connected
+                                ? .green
+                                : .gray
+                        )
+                        .frame(width: 7, height: 7)
                 }
-
-                Spacer()
-
-                Circle()
-                    .fill(device.state == .booted || device.state == .connected ? .green : .gray)
-                    .frame(width: 7, height: 7)
+                .padding(7)
+                .contentShape(Rectangle())
             }
-            .padding(7)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            if device.platform == .iOS {
+                Button {
+                    if device.state == .shutdown {
+                        viewModel.runSimulator(device)
+                    } else {
+                        Task {
+                            try? await viewModel.openSimulator()
+                        }
+                    }
+                } label: {
+                    Image(
+                        systemName: device.state == .shutdown
+                            ? "play.fill"
+                            : "macwindow"
+                    )
+                    .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.borderless)
+                .help(
+                    device.state == .shutdown
+                        ? "Boot and open Simulator"
+                        : "Open Simulator"
+                )
+                .disabled(viewModel.isLaunchingIOSApp)
+            }
         }
-        .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 7)
-                .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+                .fill(
+                    isSelected
+                        ? Color.accentColor.opacity(0.14)
+                        : Color.clear
+                )
         )
     }
 }
