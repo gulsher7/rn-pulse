@@ -103,6 +103,7 @@ final class IOSPerformanceService {
     ) -> Bool {
         stopFPSRecording()
         setLatestFPS(nil)
+        setLatestThreadMetrics(jsPercent: nil, uiPercent: nil)
 
         let traceURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("rn-pulse-(UUID().uuidString)")
