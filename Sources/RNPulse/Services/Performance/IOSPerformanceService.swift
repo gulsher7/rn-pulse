@@ -2,11 +2,18 @@ import Foundation
 
 final class IOSPerformanceService {
     private let runner = ProcessRunner()
+
     private var mirrorProcess: Process?
     private var mirrorDecoderProcess: Process?
     private var mirrorInputPipe: Pipe?
     private var mirrorOutputPipe: Pipe?
     private var mirrorErrorPipe: Pipe?
+
+    private var fpsProcess: Process?
+    private var fpsTraceURL: URL?
+
+    private let fpsLock = NSLock()
+    private var latestFPS: Double?
 
     func discoverRunningApps(deviceID: String) async throws -> [IOSRunningApp] {
         let result = try await runner.run(
@@ -73,8 +80,164 @@ final class IOSPerformanceService {
 
         return PerformanceSnapshot(
             cpuPercent: values[0],
-            memoryMB: values[1] / 1024.0
+            memoryMB: values[1] / 1024.0,
+            fps: currentFPS()
         )
+    }
+
+    // Core Animation FPS is collected by Instruments/xctrace rather than by
+    // measuring the simulator mirror stream. The mirror is only a preview and
+    // must never be treated as the app's FPS.
+    @discardableResult
+    func startFPSRecording(
+        deviceID: String,
+        app: IOSRunningApp,
+        durationSeconds: Int = 5,
+        onResult: @escaping @Sendable (Double) -> Void,
+        onError: @escaping @Sendable (String) -> Void
+    ) -> Bool {
+        stopFPSRecording()
+        setLatestFPS(nil)
+
+        let traceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rn-pulse-(UUID().uuidString)")
+            .appendingPathExtension("trace")
+
+        let process = Process()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = [
+            "xctrace",
+            "record",
+            "--instrument", "Core Animation FPS",
+            "--device", deviceID,
+            "--attach", app.processName,
+            "--time-limit", "(max(durationSeconds, 3))s",
+            "--no-prompt",
+            "--output", traceURL.path
+        ]
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+
+            if let message = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !message.isEmpty {
+                onError(message)
+            }
+        }
+
+        process.terminationHandler = { [weak self] process in
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+
+            guard let self else { return }
+
+            Task {
+                defer {
+                    try? FileManager.default.removeItem(at: traceURL)
+                    self.fpsProcess = nil
+                    self.fpsTraceURL = nil
+                }
+
+                guard FileManager.default.fileExists(atPath: traceURL.path) else {
+                    if process.terminationStatus != 0 {
+                        onError("Core Animation FPS recording failed to create a trace.")
+                    }
+                    return
+                }
+
+                do {
+                    let fps = try await self.exportFPS(from: traceURL)
+                    self.setLatestFPS(fps)
+                    onResult(fps)
+                } catch {
+                    onError("Unable to read Core Animation FPS: (error.localizedDescription)")
+                }
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+            onError("Unable to start Core Animation FPS recording: (error.localizedDescription)")
+            return false
+        }
+
+        fpsProcess = process
+        fpsTraceURL = traceURL
+        return true
+    }
+
+    func stopFPSRecording() {
+        if let process = fpsProcess, process.isRunning {
+            // xctrace flushes the trace when interrupted. terminate() is not
+            // sufficient for a clean trace, so request a graceful interrupt.
+            sendSIGINT(to: process)
+        }
+
+        fpsProcess = nil
+        fpsTraceURL = nil
+    }
+
+    private func currentFPS() -> Double? {
+        fpsLock.lock()
+        defer { fpsLock.unlock() }
+        return latestFPS
+    }
+
+    private func setLatestFPS(_ value: Double?) {
+        fpsLock.lock()
+        latestFPS = value
+        fpsLock.unlock()
+    }
+
+    private func exportFPS(from traceURL: URL) async throws -> Double {
+        let xpath = "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"core-animation-fps-estimate\"]"
+
+        let result = try await runner.run(
+            "/usr/bin/xcrun",
+            arguments: [
+                "xctrace",
+                "export",
+                "--input", traceURL.path,
+                "--xpath", xpath
+            ],
+            timeout: 30
+        )
+
+        guard result.exitCode == 0 else {
+            throw NSError(
+                domain: "RNPulse.iOS",
+                code: Int(result.exitCode),
+                userInfo: [
+                    NSLocalizedDescriptionKey: result.stderr.isEmpty
+                        ? "xctrace could not export Core Animation FPS data."
+                        : result.stderr
+                ]
+            )
+        }
+
+        guard let fps = CoreAnimationFPSParser.parse(result.stdout) else {
+            throw NSError(
+                domain: "RNPulse.iOS",
+                code: 4,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Core Animation FPS trace contained no usable FPS samples."
+                ]
+            )
+        }
+
+        return fps
+    }
+
+    private func sendSIGINT(to process: Process) {
+        kill(process.processIdentifier, SIGINT)
     }
 
     @discardableResult
@@ -134,7 +297,7 @@ final class IOSPerformanceService {
             do {
                 try ffmpegInput.fileHandleForWriting.write(contentsOf: data)
             } catch {
-                onError("Simulator mirror stream ended: \(error.localizedDescription)")
+                onError("Simulator mirror stream ended: (error.localizedDescription)")
             }
         }
 
@@ -165,7 +328,7 @@ final class IOSPerformanceService {
             if recordProcess.isRunning { recordProcess.terminate() }
             if ffmpegProcess.isRunning { ffmpegProcess.terminate() }
 
-            onError("Unable to start fast simulator mirror: \(error.localizedDescription)")
+            onError("Unable to start fast simulator mirror: (error.localizedDescription)")
             return false
         }
 
@@ -306,6 +469,151 @@ final class IOSPerformanceService {
 
         return apps.sorted {
             $0.bundleID.localizedCaseInsensitiveCompare($1.bundleID) == .orderedAscending
+        }
+    }
+}
+
+private enum CoreAnimationFPSParser {
+    static func parse(_ xml: String) -> Double? {
+        let idPattern = #"<(?:[A-Za-z0-9_-]+)[^>]*\bid=\"([^\"]+)\"[^>]*\bfmt=\"([^\"]*)\"[^>]*>"#
+        let rowPattern = #"<row>(.*?)</row>"#
+
+        var valuesByID: [String: String] = [:]
+
+        for match in matches(of: idPattern, in: xml) {
+            valuesByID[match.1] = match.2
+        }
+
+        var weightedFPS = 0.0
+        var totalDuration = 0.0
+        var unweightedValues: [Double] = []
+
+        for row in matches(of: rowPattern, in: xml) {
+            guard let fpsText = value(
+                forTag: "fps",
+                in: row.1,
+                valuesByID: valuesByID
+            ),
+            let fps = parseFPS(fpsText) else {
+                continue
+            }
+
+            if let durationText = value(
+                forTag: "duration",
+                in: row.1,
+                valuesByID: valuesByID
+            ),
+            let duration = parseSeconds(durationText),
+            duration > 0 {
+                weightedFPS += fps * duration
+                totalDuration += duration
+            } else {
+                unweightedValues.append(fps)
+            }
+        }
+
+        if totalDuration > 0 {
+            return weightedFPS / totalDuration
+        }
+
+        guard !unweightedValues.isEmpty else { return nil }
+        return unweightedValues.reduce(0, +) / Double(unweightedValues.count)
+    }
+
+    private static func value(
+        forTag tag: String,
+        in row: String,
+        valuesByID: [String: String]
+    ) -> String? {
+        let pattern = #"<#(tag)\b([^>]*)>"#
+
+        guard let match = firstMatch(of: pattern, in: row) else {
+            return nil
+        }
+
+        let attributes = match.1
+
+        if let fmt = attribute(named: "fmt", in: attributes) {
+            return fmt
+        }
+
+        if let ref = attribute(named: "ref", in: attributes) {
+            return valuesByID[ref]
+        }
+
+        return nil
+    }
+
+    private static func parseFPS(_ value: String) -> Double? {
+        let cleaned = value.replacingOccurrences(of: ",", with: "")
+        let pattern = #"([0-9]+(?:\.[0-9]+)?)\s*FPS"#
+
+        if let match = firstMatch(of: pattern, in: cleaned),
+           let fps = Double(match.1) {
+            return fps
+        }
+
+        return Double(cleaned.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private static func parseSeconds(_ value: String) -> Double? {
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let match = firstMatch(
+            of: #"([0-9]+(?:\.[0-9]+)?)\s*(ms|s)"#,
+            in: cleaned
+        ),
+        let number = Double(match.1) {
+            return match.2 == "ms" ? number / 1000.0 : number
+        }
+
+        return nil
+    }
+
+    private static func attribute(named name: String, in attributes: String) -> String? {
+        let pattern = #"\b#(name)=\"([^\"]*)\""#
+        return firstMatch(of: pattern, in: attributes)?.1
+    }
+
+    private static func firstMatch(
+        of pattern: String,
+        in string: String
+    ) -> (String, String)? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+              let match = regex.firstMatch(
+                in: string,
+                range: NSRange(string.startIndex..., in: string)
+              ),
+              match.numberOfRanges >= 2,
+              let first = Range(match.range(at: 1), in: string),
+              let second = Range(match.range(at: 2), in: string) else {
+            return nil
+        }
+
+        return (String(string[first]), String(string[second]))
+    }
+
+    private static func matches(
+        of pattern: String,
+        in string: String
+    ) -> [(String, String)] {
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.dotMatchesLineSeparators]
+        ) else {
+            return []
+        }
+
+        let range = NSRange(string.startIndex..., in: string)
+
+        return regex.matches(in: string, range: range).compactMap { match in
+            guard match.numberOfRanges >= 3,
+                  let first = Range(match.range(at: 1), in: string),
+                  let second = Range(match.range(at: 2), in: string) else {
+                return nil
+            }
+
+            return (String(string[first]), String(string[second]))
         }
     }
 }
